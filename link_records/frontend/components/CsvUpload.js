@@ -4,13 +4,22 @@ import {
     Button,
     Heading,
     Text,
+    FormField,
+    Select,
 } from '@airtable/blocks/ui';
 
-function CsvUpload({ onUpload, onBack }) {
+function CsvUpload({ onUpload, onBack, linkedTable }) {
     const [csvData, setCsvData] = useState(null);
     const [headers, setHeaders] = useState([]);
     const [rows, setRows] = useState([]);
     const [error, setError] = useState('');
+    const [fieldMappings, setFieldMappings] = useState({
+        exactMatchField: { csvField: '', airtableField: '' },
+        fuzzyMatchFields: [
+            { csvField: '', airtableField: '', weight: 0.7 },
+            { csvField: '', airtableField: '', weight: 0.3 }
+        ]
+    });
     const fileInputRef = useRef(null);
 
     const parseCSV = (csvText) => {
@@ -84,6 +93,50 @@ function CsvUpload({ onUpload, onBack }) {
         }
     };
 
+    // Get field options for dropdowns
+    const csvFieldOptions = [
+        { value: '', label: 'Select CSV field...' },
+        ...headers.map(header => ({ value: header, label: header }))
+    ];
+
+    const airtableFieldOptions = [
+        { value: '', label: 'Select Airtable field...' },
+        ...(linkedTable ? linkedTable.fields.map(field => ({
+            value: field.id,
+            label: field.name
+        })) : [])
+    ];
+
+    const updateExactMatchMapping = (type, value) => {
+        setFieldMappings(prev => ({
+            ...prev,
+            exactMatchField: {
+                ...prev.exactMatchField,
+                [type]: value
+            }
+        }));
+    };
+
+    const updateFuzzyMatchMapping = (index, type, value) => {
+        setFieldMappings(prev => ({
+            ...prev,
+            fuzzyMatchFields: prev.fuzzyMatchFields.map((field, i) => 
+                i === index ? { ...field, [type]: value } : field
+            )
+        }));
+    };
+
+    const canProceed = () => {
+        return csvData && 
+               fieldMappings.exactMatchField.csvField && 
+               fieldMappings.exactMatchField.airtableField &&
+               fieldMappings.fuzzyMatchFields.some(f => f.csvField && f.airtableField);
+    };
+
+    const handleProceed = () => {
+        onUpload(csvData, fieldMappings);
+    };
+
     return (
         <Box padding={4}>
             <Heading size="large" marginBottom={3}>
@@ -92,7 +145,7 @@ function CsvUpload({ onUpload, onBack }) {
             
             <Text marginBottom={3}>
                 Upload a CSV file or paste CSV data containing participant information.
-                Make sure your CSV includes columns for email, name, and any other relevant fields.
+                Then configure how the CSV fields should be matched against the Airtable fields.
             </Text>
 
             <Box marginBottom={4}>
@@ -136,43 +189,114 @@ function CsvUpload({ onUpload, onBack }) {
                 </Box>
             )}
 
-            {csvData && (
-                <Box marginBottom={4}>
-                    <Box display="flex" justifyContent="space-between" alignItems="center" marginBottom={3}>
-                        <Heading size="medium">
-                            Preview ({rows.length} rows)
-                        </Heading>
-                        <Button size="small" onClick={clearData}>
-                            Clear Data
-                        </Button>
-                    </Box>
-                    
-                    <Box maxHeight="300px" overflow="auto" border="thick" borderRadius="4px">
-                        <Box backgroundColor="white">
-                            <Box display="flex" fontWeight="strong" padding={2} borderBottom="thin">
-                                {headers.map((header, index) => (
-                                    <Box key={index} flex="1" paddingRight={2}>
-                                        {header}
-                                    </Box>
-                                ))}
-                            </Box>
-                            {rows.slice(0, 10).map((row, rowIndex) => (
-                                <Box key={rowIndex} display="flex" padding={2} borderBottom="thin">
-                                    {headers.map((header, cellIndex) => (
-                                        <Box key={cellIndex} flex="1" paddingRight={2}>
-                                            {row[header] || ''}
+            {csvData && headers.length > 0 && (
+                <>
+                    <Box marginBottom={4}>
+                        <Box display="flex" justifyContent="space-between" alignItems="center" marginBottom={3}>
+                            <Heading size="medium">
+                                Preview ({rows.length} rows)
+                            </Heading>
+                            <Button size="small" onClick={clearData}>
+                                Clear Data
+                            </Button>
+                        </Box>
+                        
+                        <Box maxHeight="200px" overflow="auto" border="thick" borderRadius="4px" marginBottom={4}>
+                            <Box backgroundColor="white">
+                                <Box display="flex" fontWeight="strong" padding={2} borderBottom="thin">
+                                    {headers.map((header, index) => (
+                                        <Box key={index} flex="1" paddingRight={2}>
+                                            {header}
                                         </Box>
                                     ))}
                                 </Box>
-                            ))}
-                        </Box>
-                        {rows.length > 10 && (
-                            <Box padding={2} textAlign="center" backgroundColor="lightGray1">
-                                <Text>... and {rows.length - 10} more rows</Text>
+                                {rows.slice(0, 5).map((row, rowIndex) => (
+                                    <Box key={rowIndex} display="flex" padding={2} borderBottom="thin">
+                                        {headers.map((header, cellIndex) => (
+                                            <Box key={cellIndex} flex="1" paddingRight={2}>
+                                                {row[header] || ''}
+                                            </Box>
+                                        ))}
+                                    </Box>
+                                ))}
                             </Box>
-                        )}
+                        </Box>
                     </Box>
-                </Box>
+
+                    <Heading size="medium" marginBottom={3}>
+                        Configure Field Matching
+                    </Heading>
+
+                    {/* Exact Match Configuration */}
+                    <Box padding={3} border="thick" borderRadius="4px" marginBottom={3}>
+                        <Heading size="small" marginBottom={3}>
+                            Exact Match Fields (for definite matches)
+                        </Heading>
+                        <Text fontSize="small" textColor="light" marginBottom={3}>
+                            Records will be considered definite matches if these fields are exactly the same.
+                        </Text>
+                        
+                        <Box display="flex" gap={3}>
+                            <FormField label="CSV Field" flex="1">
+                                <Select
+                                    options={csvFieldOptions}
+                                    value={fieldMappings.exactMatchField.csvField}
+                                    onChange={value => updateExactMatchMapping('csvField', value)}
+                                />
+                            </FormField>
+                            <FormField label="Airtable Field" flex="1">
+                                <Select
+                                    options={airtableFieldOptions}
+                                    value={fieldMappings.exactMatchField.airtableField}
+                                    onChange={value => updateExactMatchMapping('airtableField', value)}
+                                />
+                            </FormField>
+                        </Box>
+                    </Box>
+
+                    {/* Fuzzy Match Configuration */}
+                    <Box padding={3} border="thick" borderRadius="4px" marginBottom={4}>
+                        <Heading size="small" marginBottom={3}>
+                            Fuzzy Match Fields (for similar matches)
+                        </Heading>
+                        <Text fontSize="small" textColor="light" marginBottom={3}>
+                            Records will be considered fuzzy matches if these fields are similar. 
+                            Higher weights are more important for matching.
+                        </Text>
+                        
+                        {fieldMappings.fuzzyMatchFields.map((fuzzyField, index) => (
+                            <Box key={index} display="flex" gap={3} marginBottom={2}>
+                                <FormField label={`CSV Field ${index + 1}`} flex="1">
+                                    <Select
+                                        options={csvFieldOptions}
+                                        value={fuzzyField.csvField}
+                                        onChange={value => updateFuzzyMatchMapping(index, 'csvField', value)}
+                                    />
+                                </FormField>
+                                <FormField label={`Airtable Field ${index + 1}`} flex="1">
+                                    <Select
+                                        options={airtableFieldOptions}
+                                        value={fuzzyField.airtableField}
+                                        onChange={value => updateFuzzyMatchMapping(index, 'airtableField', value)}
+                                    />
+                                </FormField>
+                                <FormField label="Weight" width="80px">
+                                    <Select
+                                        options={[
+                                            { value: 0.1, label: '10%' },
+                                            { value: 0.3, label: '30%' },
+                                            { value: 0.5, label: '50%' },
+                                            { value: 0.7, label: '70%' },
+                                            { value: 0.9, label: '90%' }
+                                        ]}
+                                        value={fuzzyField.weight}
+                                        onChange={value => updateFuzzyMatchMapping(index, 'weight', value)}
+                                    />
+                                </FormField>
+                            </Box>
+                        ))}
+                    </Box>
+                </>
             )}
 
             <Box display="flex" justifyContent="space-between">
@@ -182,8 +306,8 @@ function CsvUpload({ onUpload, onBack }) {
                 
                 <Button
                     variant="primary"
-                    disabled={!csvData}
-                    onClick={() => onUpload(csvData)}
+                    disabled={!canProceed()}
+                    onClick={handleProceed}
                 >
                     Process Matches ({csvData ? csvData.length : 0} rows)
                 </Button>

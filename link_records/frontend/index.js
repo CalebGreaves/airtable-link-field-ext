@@ -1,12 +1,12 @@
 import {initializeBlock, expandRecordPickerAsync} from '@airtable/blocks/ui';
-import React, {useState} from 'react';
+import React, {useState, useEffect} from 'react';
 import {
     Box,
     Button,
     FormField,
     Heading,
-    TablePickerSynced,
-    FieldPickerSynced,
+    TablePicker,
+    FieldPicker,
     Text,
     useBase,
     useRecords,
@@ -40,6 +40,13 @@ function LinkRecordsApp() {
         complete: 'Complete'
     };
 
+    // Reset everything when component mounts to avoid pre-fill issues
+    useEffect(() => {
+        setSelectedTable(null);
+        setSelectedRecord(null);
+        setSelectedLinkedField(null);
+    }, []);
+
     const handleSetupNext = () => {
         if (selectedTable && selectedRecord && selectedLinkedField) {
             setCurrentStep('upload');
@@ -64,13 +71,13 @@ function LinkRecordsApp() {
         }
     };
 
-    const handleCsvUpload = (data) => {
+    const handleCsvUpload = (data, fieldMappings) => {
         setCsvData(data);
         
         // Process matches using the utility function
         const linkedTable = base.getTableByIdIfExists(selectedLinkedField.options.linkedTableId);
         if (linkedTable) {
-            const processedMatches = processMatches(data, linkedTable, base);
+            const processedMatches = processMatches(data, linkedTable, base, fieldMappings);
             setMatches(processedMatches);
         }
         
@@ -88,13 +95,14 @@ function LinkRecordsApp() {
             </Heading>
             
             <FormField label="Select Table" marginBottom={3}>
-                <TablePickerSynced
-                    globalConfigKey="selectedTableId"
+                <TablePicker
+                    table={selectedTable}
                     onChange={table => {
                         setSelectedTable(table);
                         setSelectedRecord(null); // Reset record when table changes
                         setSelectedLinkedField(null); // Reset field when table changes
                     }}
+                    placeholder="Choose a table..."
                 />
             </FormField>
 
@@ -134,11 +142,12 @@ function LinkRecordsApp() {
 
             {selectedRecord && (
                 <FormField label="Select Linked Record Field" marginBottom={3}>
-                    <FieldPickerSynced
+                    <FieldPicker
                         table={selectedTable}
-                        globalConfigKey="selectedLinkedFieldId"
-                        allowedTypes={['multipleRecordLinks']}
+                        field={selectedLinkedField}
                         onChange={field => setSelectedLinkedField(field)}
+                        allowedTypes={['multipleRecordLinks']}
+                        placeholder="Choose a linked record field..."
                     />
                 </FormField>
             )}
@@ -192,6 +201,7 @@ function LinkRecordsApp() {
                     <CsvUpload 
                         onUpload={handleCsvUpload}
                         onBack={() => setCurrentStep('setup')}
+                        linkedTable={base.getTableByIdIfExists(selectedLinkedField?.options?.linkedTableId)}
                     />
                 );
                 

@@ -90,115 +90,251 @@ export const calculateFieldSimilarity = (csvValue, airtableValue, matchType = 'f
     }
 };
 
+// Check if a field combination matches
+const checkFieldCombination = (csvRow, airtableRecord, fieldCombination, linkedTable) => {
+    if (!fieldCombination.fields || fieldCombination.fields.length === 0) {
+        return { matches: false, score: 0, details: {} };
+    }
+
+    let allMatch = true;
+    let totalScore = 0;
+    let fieldCount = 0;
+    const details = {};
+
+    for (const field of fieldCombination.fields) {
+        if (!field.csvField || !field.airtableField) {
+            continue; // Skip incomplete field mappings
+        }
+
+        const airtableField = linkedTable.getFieldByIdIfExists(field.airtableField);
+        if (!airtableField) {
+            continue;
+        }
+
+        const csvValue = csvRow[field.csvField];
+        const airtableValue = airtableRecord.getCellValueAsString(airtableField);
+        
+        const similarity = calculateFieldSimilarity(csvValue, airtableValue, field.matchType);
+        
+        details[field.csvField] = {
+            csvValue,
+            airtableValue,
+            similarity,
+            matchType: field.matchType,
+            required: fieldCombination.operator === 'AND'
+        };
+
+        totalScore += similarity;
+        fieldCount++;
+
+        // For AND combinations, all fields must have high similarity
+        if (fieldCombination.operator === 'AND' && similarity < 0.9) {
+            allMatch = false;
+        }
+    }
+
+    if (fieldCount === 0) {
+        return { matches: false, score: 0, details: {} };
+    }
+
+    const averageScore = totalScore / fieldCount;
+    
+    // For AND combinations, all must match well
+    // For OR combinations, average score is used
+    const matches = fieldCombination.operator === 'AND' ? allMatch : averageScore > 0.6;
+
+    return {
+        matches,
+        score: averageScore,
+        details
+    };
+};
+
+// Check if any exact match group matches
+const checkExactMatchGroups = (csvRow, airtableRecord, exactMatchGroups, linkedTable) => {
+    for (const group of exactMatchGroups) {
+        // OR logic between field combinations within a group
+        for (const combination of group.fieldCombinations) {
+            const result = checkFieldCombination(csvRow, airtableRecord, combination, linkedTable);
+            if (result.matches) {
+                return {
+                    matches: true,
+                    score: result.score,
+                    details: result.details,
+                    matchedCombination: combination
+                };
+            }
+        }
+    }
+    
+    return { matches: false, score: 0, details: {} };
+};
+
+// Check fuzzy match groups
+const checkFuzzyMatchGroups = (csvRow, airtableRecord, fuzzyMatchGroups, linkedTable) => {
+    if (!fuzzyMatchGroups || fuzzyMatchGroups.length === 0) {
+        return { matches: false, score: 0, details: {} };
+    }
+
+    let totalScore = 0;
+    let totalWeight = 0;
+    const allDetails = {};
+
+    for (const group of fuzzyMatchGroups) {
+        let groupScore = 0;
+        let groupWeight = 0;
+
+        // AND logic between field combinations within a group
+        let allCombinationsMatch = true;
+
+        for (const combination of group.fieldCombinations) {
+            const result = checkFieldCombination(csvRow, airtableRecord, combination, linkedTable);
+            
+            Object.assign(allDetails, result.details);
+            
+            const weight = combination.weight || 0.5;
+            groupScore += result.score * weight;
+            groupWeight += weight;
+
+            // For fuzzy matching, we're more lenient - just need decent scores
+            if (result.score < 0.4) {
+                allCombinationsMatch = false;
+            }
+        }
+
+        if (groupWeight > 0) {
+            const normalizedGroupScore = groupScore / groupWeight;
+            const groupWeightFactor = group.weight || 1.0;
+            
+            totalScore += normalizedGroupScore * groupWeightFactor;
+            totalWeight += groupWeightFactor;
+        }
+    }
+
+    if (totalWeight === 0) {
+        return { matches: false, score: 0, details: allDetails };
+    }
+
+    const finalScore = totalScore / totalWeight;
+    const matches = finalScore > 0.6;
+
+    return {
+        matches,
+        score: finalScore,
+        details: allDetails
+    };
+};
+
 export const processMatches = (csvData, linkedTable, base, fieldMappings) => {
+    console.log('Processing matches with:', { 
+        csvRowCount: csvData?.length, 
+        linkedTable: linkedTable?.name,
+        fieldMappings 
+    });
+
     if (!linkedTable || !csvData || csvData.length === 0 || !fieldMappings) {
+        console.warn('Missing required data for processing matches');
         return { definite: [], fuzzy: [], missing: csvData || [] };
     }
 
-    const linkedQuery = linkedTable.selectRecords();
-    const linkedRecords = linkedQuery.records;
+    try {
+        const linkedQuery = linkedTable.selectRecords();
+        const linkedRecords = linkedQuery.records;
+        
+        console.log('Available linked records:', linkedRecords.length);
 
-    const definiteMatches = [];
-    const fuzzyMatches = [];
-    const missingRecords = [];
+        const definiteMatches = [];
+        const fuzzyMatches = [];
+        const missingRecords = [];
 
-    // Get the exact match field from Airtable
-    const exactMatchAirtableField = linkedTable.getFieldByIdIfExists(fieldMappings.exactMatchField.airtableField);
-    
-    csvData.forEach(csvRow => {
-        let bestMatch = null;
-        let bestScore = 0;
-        let isDefiniteMatch = false;
+        csvData.forEach((csvRow, rowIndex) => {
+            let bestMatch = null;
+            let bestScore = 0;
+            let isDefiniteMatch = false;
 
-        linkedRecords.forEach(airtableRecord => {
-            // Check for exact match first
-            if (exactMatchAirtableField && fieldMappings.exactMatchField.csvField) {
-                const csvValue = csvRow[fieldMappings.exactMatchField.csvField];
-                const airtableValue = airtableRecord.getCellValueAsString(exactMatchAirtableField);
-                
-                const exactSimilarity = calculateFieldSimilarity(csvValue, airtableValue, 'exact');
-                
-                if (exactSimilarity === 1) {
-                    definiteMatches.push({
-                        csvRow,
-                        airtableRecord: {
-                            id: airtableRecord.id,
-                            name: airtableRecord.getCellValueAsString(linkedTable.primaryField),
-                            record: airtableRecord
-                        },
-                        matchType: 'exact',
-                        similarity: 1.0
-                    });
-                    isDefiniteMatch = true;
-                    return;
-                }
-            }
-
-            // If no exact match, check fuzzy matches
-            if (!isDefiniteMatch) {
-                let combinedScore = 0;
-                let totalWeight = 0;
-                const fieldMatches = {};
-
-                fieldMappings.fuzzyMatchFields.forEach(fuzzyField => {
-                    if (fuzzyField.csvField && fuzzyField.airtableField) {
-                        const airtableField = linkedTable.getFieldByIdIfExists(fuzzyField.airtableField);
-                        if (airtableField) {
-                            const csvValue = csvRow[fuzzyField.csvField];
-                            const airtableValue = airtableRecord.getCellValueAsString(airtableField);
-                            
-                            const similarity = calculateFieldSimilarity(
-                                csvValue, 
-                                airtableValue, 
-                                fuzzyField.matchType || 'fuzzy'
-                            );
-                            
-                            fieldMatches[fuzzyField.csvField] = {
-                                csvValue,
-                                airtableValue,
-                                similarity,
-                                weight: fuzzyField.weight,
-                                matchType: fuzzyField.matchType || 'fuzzy'
-                            };
-                            
-                            combinedScore += similarity * fuzzyField.weight;
-                            totalWeight += fuzzyField.weight;
+            linkedRecords.forEach(airtableRecord => {
+                try {
+                    // Check for exact matches first
+                    if (fieldMappings.exactMatchGroups && fieldMappings.exactMatchGroups.length > 0) {
+                        const exactResult = checkExactMatchGroups(
+                            csvRow, 
+                            airtableRecord, 
+                            fieldMappings.exactMatchGroups, 
+                            linkedTable
+                        );
+                        
+                        if (exactResult.matches) {
+                            definiteMatches.push({
+                                csvRow,
+                                airtableRecord: {
+                                    id: airtableRecord.id,
+                                    name: airtableRecord.getCellValueAsString(linkedTable.primaryField),
+                                    record: airtableRecord
+                                },
+                                matchType: 'exact',
+                                similarity: exactResult.score,
+                                fieldMatches: exactResult.details
+                            });
+                            isDefiniteMatch = true;
+                            return;
                         }
                     }
-                });
 
-                if (totalWeight > 0) {
-                    const normalizedScore = combinedScore / totalWeight;
-                    
-                    if (normalizedScore > 0.6 && normalizedScore > bestScore) {
-                        bestMatch = {
+                    // If no exact match and fuzzy matching is enabled, check fuzzy matches
+                    if (!isDefiniteMatch && fieldMappings.enableFuzzyMatching && 
+                        fieldMappings.fuzzyMatchGroups && fieldMappings.fuzzyMatchGroups.length > 0) {
+                        
+                        const fuzzyResult = checkFuzzyMatchGroups(
                             csvRow,
-                            airtableRecord: {
-                                id: airtableRecord.id,
-                                name: airtableRecord.getCellValueAsString(linkedTable.primaryField),
-                                record: airtableRecord
-                            },
-                            similarity: normalizedScore,
-                            fieldMatches
-                        };
-                        bestScore = normalizedScore;
+                            airtableRecord,
+                            fieldMappings.fuzzyMatchGroups,
+                            linkedTable
+                        );
+
+                        if (fuzzyResult.matches && fuzzyResult.score > bestScore) {
+                            bestMatch = {
+                                csvRow,
+                                airtableRecord: {
+                                    id: airtableRecord.id,
+                                    name: airtableRecord.getCellValueAsString(linkedTable.primaryField),
+                                    record: airtableRecord
+                                },
+                                similarity: fuzzyResult.score,
+                                fieldMatches: fuzzyResult.details
+                            };
+                            bestScore = fuzzyResult.score;
+                        }
                     }
+                } catch (error) {
+                    console.error(`Error processing record ${rowIndex} against Airtable record ${airtableRecord.id}:`, error);
                 }
+            });
+
+            if (isDefiniteMatch) {
+                return; // Already added to definiteMatches
+            } else if (bestMatch && bestScore > 0.6) {
+                fuzzyMatches.push(bestMatch);
+            } else {
+                missingRecords.push(csvRow);
             }
         });
 
-        if (isDefiniteMatch) {
-            return; // Already added to definiteMatches
-        } else if (bestMatch && bestScore > 0.6) {
-            fuzzyMatches.push(bestMatch);
-        } else {
-            missingRecords.push(csvRow);
-        }
-    });
+        const results = {
+            definite: definiteMatches,
+            fuzzy: fuzzyMatches,
+            missing: missingRecords
+        };
 
-    return {
-        definite: definiteMatches,
-        fuzzy: fuzzyMatches,
-        missing: missingRecords
-    };
+        console.log('Processing complete:', {
+            definite: results.definite.length,
+            fuzzy: results.fuzzy.length,
+            missing: results.missing.length
+        });
+
+        return results;
+
+    } catch (error) {
+        console.error('Error in processMatches:', error);
+        return { definite: [], fuzzy: [], missing: csvData };
+    }
 };

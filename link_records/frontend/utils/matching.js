@@ -77,11 +77,18 @@ export const calculateFieldSimilarity = (csvValue, airtableValue, matchType = 'f
             return wordBasedSimilarity(csvStr, airtableStr);
             
         case 'contains':
-            // Check if one string contains the other
+            // Check if one string contains the other - FIXED
             const lower1 = csvStr.toLowerCase();
             const lower2 = airtableStr.toLowerCase();
+            
+            // If they're exactly the same, return 1.0
+            if (lower1 === lower2) {
+                return 1.0;
+            }
+            
+            // If one contains the other, return high similarity
             if (lower1.includes(lower2) || lower2.includes(lower1)) {
-                return 0.8; // High similarity if one contains the other
+                return 0.9; // High similarity but not perfect since they're not identical
             }
             return 0;
             
@@ -90,17 +97,16 @@ export const calculateFieldSimilarity = (csvValue, airtableValue, matchType = 'f
     }
 };
 
-// Check if a field combination matches
+// Check if a field combination matches with pure pass/fail logic
 const checkFieldCombination = (csvRow, airtableRecord, fieldCombination, linkedTable) => {
     if (!fieldCombination.fields || fieldCombination.fields.length === 0) {
         return { matches: false, score: 0, details: {} };
     }
 
-    let allMatch = true;
-    let totalScore = 0;
-    let fieldCount = 0;
     const details = {};
+    const fieldResults = [];
 
+    // Evaluate each field as pass/fail
     for (const field of fieldCombination.fields) {
         if (!field.csvField || !field.airtableField) {
             continue; // Skip incomplete field mappings
@@ -116,36 +122,46 @@ const checkFieldCombination = (csvRow, airtableRecord, fieldCombination, linkedT
         
         const similarity = calculateFieldSimilarity(csvValue, airtableValue, field.matchType);
         
+        // Determine pass/fail based on field type
+        let passes = false;
+        if (field.matchType === 'exact') {
+            passes = similarity >= 1.0; // Exact must be perfect
+        } else {
+            passes = similarity >= 0.8; // Fuzzy must be 80%+
+        }
+
         details[field.csvField] = {
             csvValue,
             airtableValue,
             similarity,
             matchType: field.matchType,
+            passes: passes,
             required: fieldCombination.operator === 'AND'
         };
 
-        totalScore += similarity;
-        fieldCount++;
-
-        // For AND combinations, all fields must have high similarity
-        if (fieldCombination.operator === 'AND' && similarity < 0.9) {
-            allMatch = false;
-        }
+        fieldResults.push(passes);
     }
 
-    if (fieldCount === 0) {
-        return { matches: false, score: 0, details: {} };
+    if (fieldResults.length === 0) {
+        return { matches: false, score: 0, details };
     }
 
-    const averageScore = totalScore / fieldCount;
-    
-    // For AND combinations, all must match well
-    // For OR combinations, average score is used
-    const matches = fieldCombination.operator === 'AND' ? allMatch : averageScore > 0.6;
+    // Apply AND/OR logic to field results
+    let matches = false;
+    if (fieldCombination.operator === 'AND') {
+        matches = fieldResults.every(result => result === true); // ALL must pass
+    } else {
+        matches = fieldResults.some(result => result === true); // ANY must pass
+    }
+
+    // For display purposes, calculate an average similarity score
+    // (This is just for the UI, doesn't affect matching logic)
+    const totalSimilarity = Object.values(details).reduce((sum, detail) => sum + detail.similarity, 0);
+    const avgScore = totalSimilarity / Object.keys(details).length;
 
     return {
         matches,
-        score: averageScore,
+        score: avgScore, // Only used for display
         details
     };
 };
@@ -170,57 +186,40 @@ const checkExactMatchGroups = (csvRow, airtableRecord, exactMatchGroups, linkedT
     return { matches: false, score: 0, details: {} };
 };
 
-// Check fuzzy match groups
+// Check fuzzy match groups with pure pass/fail logic
 const checkFuzzyMatchGroups = (csvRow, airtableRecord, fuzzyMatchGroups, linkedTable) => {
     if (!fuzzyMatchGroups || fuzzyMatchGroups.length === 0) {
         return { matches: false, score: 0, details: {} };
     }
 
-    let totalScore = 0;
-    let totalWeight = 0;
     const allDetails = {};
+    const groupResults = [];
 
     for (const group of fuzzyMatchGroups) {
-        let groupScore = 0;
-        let groupWeight = 0;
+        const combinationResults = [];
 
-        // AND logic between field combinations within a group
-        let allCombinationsMatch = true;
-
+        // Evaluate each field combination in the group
         for (const combination of group.fieldCombinations) {
             const result = checkFieldCombination(csvRow, airtableRecord, combination, linkedTable);
-            
             Object.assign(allDetails, result.details);
-            
-            const weight = combination.weight || 0.5;
-            groupScore += result.score * weight;
-            groupWeight += weight;
-
-            // For fuzzy matching, we're more lenient - just need decent scores
-            if (result.score < 0.4) {
-                allCombinationsMatch = false;
-            }
+            combinationResults.push(result.matches);
         }
 
-        if (groupWeight > 0) {
-            const normalizedGroupScore = groupScore / groupWeight;
-            const groupWeightFactor = group.weight || 1.0;
-            
-            totalScore += normalizedGroupScore * groupWeightFactor;
-            totalWeight += groupWeightFactor;
-        }
+        // Apply group-level OR logic (any combination can make the group pass)
+        const groupPasses = combinationResults.some(result => result === true);
+        groupResults.push(groupPasses);
     }
 
-    if (totalWeight === 0) {
-        return { matches: false, score: 0, details: allDetails };
-    }
+    // Apply top-level AND logic between groups (all groups must pass)
+    const matches = groupResults.every(result => result === true);
 
-    const finalScore = totalScore / totalWeight;
-    const matches = finalScore > 0.6;
+    // Calculate average score for display (doesn't affect matching)
+    const allScores = Object.values(allDetails).map(detail => detail.similarity);
+    const avgScore = allScores.length > 0 ? allScores.reduce((sum, score) => sum + score, 0) / allScores.length : 0;
 
     return {
         matches,
-        score: finalScore,
+        score: avgScore,
         details: allDetails
     };
 };
@@ -312,7 +311,7 @@ export const processMatches = (csvData, linkedTable, base, fieldMappings) => {
 
             if (isDefiniteMatch) {
                 return; // Already added to definiteMatches
-            } else if (bestMatch && bestScore > 0.6) {
+            } else if (bestMatch) { // Remove score threshold check
                 fuzzyMatches.push(bestMatch);
             } else {
                 missingRecords.push(csvRow);

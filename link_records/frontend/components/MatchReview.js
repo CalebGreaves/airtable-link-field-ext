@@ -9,8 +9,8 @@ import {
 } from '@airtable/blocks/ui';
 import { processMatchesWithMapping } from '../utils/matching';
 import FieldMapping from './FieldMapping';
-import MatchingLogic from './MatchingLogic';
-import MatchResults from './MatchResults';
+import MatchingLogic from './matchingLogic';
+import MatchResults from './matchResults';
 
 function MatchReview({ 
     csvData, 

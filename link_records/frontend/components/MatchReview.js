@@ -7,7 +7,7 @@ import {
     useLoadable,
     useRecords,
 } from '@airtable/blocks/ui';
-import { processMatchesWithMapping } from '../utils/matchingUtils';
+import { processMatchesWithMapping } from '../utils/matching';
 import FieldMapping from './FieldMapping';
 import MatchingLogic from './MatchingLogic';
 import MatchResults from './MatchResults';
